@@ -37,6 +37,15 @@ pub(crate) struct StripLayoutFlags {
 
     /// Used when we want to accurately measure the size of this cell.
     pub(crate) sizing_pass: bool,
+    
+    /// Whether this cell is "fixed" (should not scroll with content)
+    pub(crate) is_fixed: bool,
+    
+    /// Total width of fixed columns - used to clip scrollable content backgrounds
+    pub(crate) fixed_columns_width: f32,
+    
+    /// Scroll offset X - used to translate fixed column backgrounds
+    pub(crate) scroll_offset_x: f32,
 }
 
 /// Positions cells in [`CellDirection`] and starts a new line on [`StripLayout::end_line`]
@@ -125,26 +134,47 @@ impl<'l> StripLayout<'l> {
         // Make sure we don't have a gap in the stripe/frame/selection background:
         let item_spacing = self.ui.spacing().item_spacing;
         let gapless_rect = max_rect.expand2(0.5 * item_spacing).round_ui();
+        
+        // For fixed cells, translate background to counter the scroll offset
+        // For non-fixed cells, clip backgrounds to not draw over fixed columns
+        let (bg_rect, painter) = if flags.is_fixed {
+            // Fixed columns: translate the rect to counter scroll, 
+            // but use the viewport's left portion as clip (where fixed columns appear on screen)
+            // Round offset to avoid sub-pixel jitter
+            let rounded_offset = flags.scroll_offset_x.round();
+            let translated_rect = gapless_rect.translate(egui::vec2(rounded_offset, 0.0));
+            // Clip to the left portion of viewport (where fixed columns should be visible)
+            let mut fixed_clip = self.ui.clip_rect();
+            fixed_clip.max.x = fixed_clip.min.x + flags.fixed_columns_width;
+            (translated_rect, self.ui.painter().with_clip_rect(fixed_clip))
+        } else if flags.fixed_columns_width > 0.0 {
+            // Non-fixed columns: clip to avoid drawing over fixed columns
+            let mut clip = self.ui.clip_rect();
+            clip.min.x = clip.min.x + flags.fixed_columns_width;
+            (gapless_rect, self.ui.painter().with_clip_rect(clip))
+        } else {
+            (gapless_rect, self.ui.painter().clone())
+        };
 
         if flags.striped {
-            self.ui.painter().rect_filled(
-                gapless_rect,
+            painter.rect_filled(
+                bg_rect,
                 egui::CornerRadius::ZERO,
                 self.ui.visuals().faint_bg_color,
             );
         }
 
         if flags.selected {
-            self.ui.painter().rect_filled(
-                gapless_rect,
+            painter.rect_filled(
+                bg_rect,
                 egui::CornerRadius::ZERO,
                 self.ui.visuals().selection.bg_fill,
             );
         }
 
         if flags.hovered && !flags.selected && self.sense.interactive() {
-            self.ui.painter().rect_filled(
-                gapless_rect,
+            painter.rect_filled(
+                bg_rect,
                 egui::CornerRadius::ZERO,
                 self.ui.visuals().widgets.hovered.bg_fill,
             );
@@ -204,10 +234,19 @@ impl<'l> StripLayout<'l> {
         child_ui_id_salt: egui::Id,
         add_cell_contents: impl FnOnce(&mut Ui),
     ) -> Ui {
+        // For fixed columns, we need to translate the max_rect to counter scroll offset
+        // Round the offset to avoid sub-pixel jitter during scrolling
+        let actual_max_rect = if flags.is_fixed {
+            let rounded_offset = flags.scroll_offset_x.round();
+            max_rect.translate(egui::vec2(rounded_offset, 0.0))
+        } else {
+            max_rect
+        };
+        
         let mut ui_builder = UiBuilder::new()
             .id_salt(child_ui_id_salt)
             .ui_stack_info(egui::UiStackInfo::new(egui::UiKind::TableCell))
-            .max_rect(max_rect)
+            .max_rect(actual_max_rect)
             .layout(self.cell_layout)
             .sense(self.sense);
         if flags.sizing_pass {
@@ -215,11 +254,24 @@ impl<'l> StripLayout<'l> {
         }
 
         let mut child_ui = self.ui.new_child(ui_builder);
+        
+        // Apply appropriate clip rect based on fixed/non-fixed status
+        if flags.is_fixed {
+            // Fixed columns: use the left portion of viewport (where fixed columns appear on screen)
+            let mut fixed_clip = self.ui.clip_rect();
+            fixed_clip.max.x = fixed_clip.min.x + flags.fixed_columns_width;
+            child_ui.shrink_clip_rect(fixed_clip);
+        } else if flags.fixed_columns_width > 0.0 {
+            // Non-fixed columns: clip to exclude fixed column region
+            let mut clip = self.ui.clip_rect();
+            clip.min.x = clip.min.x + flags.fixed_columns_width;
+            child_ui.shrink_clip_rect(clip);
+        }
 
         if flags.clip {
             let margin = egui::Vec2::splat(self.ui.visuals().clip_rect_margin);
             let margin = margin.min(0.5 * self.ui.spacing().item_spacing);
-            let clip_rect = max_rect.expand2(margin);
+            let clip_rect = actual_max_rect.expand2(margin);
             child_ui.shrink_clip_rect(clip_rect);
 
             if !child_ui.is_sizing_pass() {
@@ -235,8 +287,8 @@ impl<'l> StripLayout<'l> {
 
         if flags.overline {
             child_ui.painter().hline(
-                max_rect.x_range(),
-                max_rect.top(),
+                actual_max_rect.x_range(),
+                actual_max_rect.top(),
                 child_ui.visuals().widgets.noninteractive.bg_stroke,
             );
         }

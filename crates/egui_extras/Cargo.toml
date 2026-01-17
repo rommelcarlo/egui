@@ -1,24 +1,20 @@
 [package]
 name = "egui_extras"
-version.workspace = true
+version = "0.33.3"
 authors = [
   "Dominik Rössler <dominik@freshx.de>",
   "Emil Ernerfeldt <emil.ernerfeldt@gmail.com>",
   "René Rössler <rene@freshx.de>",
 ]
-description = "Extra functionality and widgets for the egui GUI library"
-edition.workspace = true
-rust-version.workspace = true
+description = "Extra functionality and widgets for the egui GUI library - Forked for egui_spreadsheet"
+edition = "2024"
+rust-version = "1.92"
 homepage = "https://github.com/emilk/egui"
-license.workspace = true
+license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/emilk/egui"
 categories = ["gui", "game-development"]
 keywords = ["gui", "imgui", "immediate", "portable", "gamedev"]
-include = ["../LICENSE-APACHE", "../LICENSE-MIT", "**/*.rs", "Cargo.toml"]
-
-[lints]
-workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
@@ -70,34 +66,34 @@ syntect = ["dep:syntect"]
 
 
 [dependencies]
-egui = { workspace = true, default-features = false }
+egui = { version = "0.33", default-features = false }
 
-ahash.workspace = true
-enum-map.workspace = true
-log.workspace = true
-profiling.workspace = true
+ahash = { version = "0.8.12", default-features = false, features = ["no-rng", "std"] }
+enum-map = "2.7.3"
+log = { version = "0.4.28", features = ["std"] }
+profiling = { version = "1.0.17", default-features = false }
 
 #! ### Optional dependencies
 
 # Serde for serializing state
-serde = { workspace = true, optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
 
 # Date operations needed for datepicker widget
-chrono = { workspace = true, optional = true, features = ["clock", "js-sys", "std", "wasmbind"] }
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "js-sys", "std", "wasmbind"], optional = true }
 
 ## Enable this when generating docs.
-document-features = { workspace = true, optional = true }
+document-features = { version = "0.2.11", optional = true }
 
-image = { workspace = true, optional = true }
+image = { version = "0.25.6", default-features = false, optional = true }
 
 # file feature
-mime_guess2 = { workspace = true, optional = true }
+mime_guess2 = { version = "2.3.1", default-features = false, optional = true }
 
 # syntax highlighting
-syntect = { workspace = true, optional = true, features = ["default-fancy"] }
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"], optional = true }
 
 # svg feature
-resvg = { workspace = true, optional = true }
+resvg = { version = "0.45.1", default-features = false, optional = true }
 
 # http feature
-ehttp = { workspace = true, optional = true }
+ehttp = { version = "0.6.0", default-features = false, optional = true }

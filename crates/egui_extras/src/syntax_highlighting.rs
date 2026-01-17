@@ -304,7 +304,7 @@ impl CodeTheme {
     ///
     /// There is one dark and one light theme stored at any one time.
     pub fn store_in_memory(self, ctx: &egui::Context) {
-        let id = if ctx.global_style().visuals.dark_mode {
+        let id = if ctx.style().visuals.dark_mode {
             egui::Id::new("dark")
         } else {
             egui::Id::new("light")
