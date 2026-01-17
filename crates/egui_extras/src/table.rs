@@ -533,7 +533,11 @@ impl<'a> TableBuilder<'a> {
         // Wrap header in ScrollArea to sync with body
         let mut scroll_area = egui::ScrollArea::new([scroll_options.hscroll, false])
             .id_salt(state_id.with("__header_scroll_area"))
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .scroll_source(ScrollSource {
+                drag: scroll_options.drag_to_scroll,
+                ..Default::default()
+            });
 
         // Sync header scroll offset to body if body moved
         scroll_area = scroll_area.horizontal_scroll_offset(state.scroll_offset.x);
@@ -873,6 +877,15 @@ impl Table<'_> {
         } = scroll_options;
 
         let cursor_position = ui.cursor().min;
+        
+        // Calculate fixed columns width for horizontal scrollbar offset
+        let spacing_x = ui.spacing().item_spacing.x;
+        let mut fixed_columns_width_for_scrollbar = 0.0;
+        for (i, column) in columns.iter().enumerate() {
+            if column.fixed {
+                fixed_columns_width_for_scrollbar += state.column_widths[i] + spacing_x;
+            }
+        }
 
         let mut scroll_area = ScrollArea::new([hscroll, vscroll])
             .id_salt(state_id.with("__scroll_area"))
@@ -893,6 +906,16 @@ impl Table<'_> {
         
         // Sync body scroll offset to header if header moved (or if pervious frame had offset)
         scroll_area = scroll_area.horizontal_scroll_offset(state.scroll_offset.x);
+        
+        // Offset horizontal scrollbar to start after fixed columns
+        if fixed_columns_width_for_scrollbar > 0.0 && hscroll {
+            let available_rect = ui.available_rect_before_wrap();
+            let scrollbar_rect = egui::Rect::from_min_max(
+                egui::pos2(available_rect.left() + fixed_columns_width_for_scrollbar, available_rect.top()),
+                available_rect.max,
+            );
+            scroll_area = scroll_area.scroll_bar_rect(scrollbar_rect);
+        }
 
         let columns_ref = &columns;
         // let widths_ref = &state.column_widths; // Removed
@@ -1053,9 +1076,9 @@ impl Table<'_> {
                              let clip_rect = if is_fixed { ui.clip_rect() } else { scrollable_clip_rect };
                              
                              if let Some(header_bottom) = header_bottom {
-                                 // For header-only resize, use table_top for the interaction top
-                                 // p0.y uses clip_rect.top() which is the body scroll area top,
-                                 // but we want the header region for resize interaction
+                                 // For header-only resize, the interact_rect is in parent/screen coordinates
+                                 // but we're inside the scroll area Ui. Use the background layer to 
+                                 // register the interaction in absolute coordinates.
                                  let p0_header = egui::pos2(resize_x, table_top);
                                  let p1_header = egui::pos2(resize_x, header_bottom);
                                  
@@ -1063,28 +1086,46 @@ impl Table<'_> {
                                     .expand(ui.style().interaction.resize_grab_radius_side);
 
                                  if interact_rect.is_positive() {
-                                     let resize_response =
-                                        ui.interact(interact_rect, column_resize_id, egui::Sense::click_and_drag());
+                                     // Check if pointer is in the header resize rect (in screen coordinates)
+                                     let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                                     let pointer_in_rect = pointer_pos.map_or(false, |pos| interact_rect.contains(pos));
                                      
-                                     // Debug logging
-                                     if resize_response.hovered() {
-                                         eprintln!("DEBUG RESIZE col {}: table_top={}, header_bottom={}, resize_x={}, interact_rect={:?}, clip_rect_top={}",
-                                             i, table_top, header_bottom, resize_x, interact_rect, top);
-                                     }
+                                     // Track drag state per column in frame-persistent data
+                                     let drag_key = column_resize_id.with("header_drag");
+                                     let was_dragging: bool = ui.data(|d| d.get_temp(drag_key).unwrap_or(false));
                                      
-                                     if column.auto_size_this_frame {
-                                        *column_width = width_range.clamp(max_used_widths_ref[i]);
-                                    } else if resize_response.dragged() {
-                                        let mut new_width = *column_width + resize_response.drag_delta().x;
-                                         if !column.clip {
-                                            new_width = new_width.at_least(max_used_widths_ref[i] - 8.0);
+                                     let primary_down = ui.ctx().input(|i| i.pointer.primary_down());
+                                     let primary_pressed = ui.ctx().input(|i| i.pointer.primary_pressed());
+                                     
+                                     // Start drag on press in rect
+                                     let is_dragging = if primary_pressed && pointer_in_rect {
+                                         true
+                                     } else if was_dragging && primary_down {
+                                         true
+                                     } else {
+                                         false
+                                     };
+                                     
+                                     ui.data_mut(|d| d.insert_temp(drag_key, is_dragging));
+                                     
+                                     // Handle drag
+                                     if is_dragging {
+                                         let drag_delta = ui.ctx().input(|i| i.pointer.delta());
+                                         if column.auto_size_this_frame {
+                                            *column_width = width_range.clamp(max_used_widths_ref[i]);
+                                        } else {
+                                            let mut new_width = *column_width + drag_delta.x;
+                                             if !column.clip {
+                                                new_width = new_width.at_least(max_used_widths_ref[i] - 8.0);
+                                            }
+                                            *column_width = width_range.clamp(new_width);
                                         }
-                                        *column_width = width_range.clamp(new_width);
-                                    }
-                                     
-                                     let dragging_something_else = ui.input(|i| i.pointer.any_down() || i.pointer.any_pressed());
-                                     if (resize_response.hovered() && !dragging_something_else) || resize_response.dragged() {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                                     } else if pointer_in_rect {
+                                         let dragging_something_else = ui.input(|i| i.pointer.any_down());
+                                         if !dragging_something_else {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                                         }
                                      }
                                  }
                              }
