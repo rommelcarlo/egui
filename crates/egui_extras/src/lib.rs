@@ -20,6 +20,7 @@ pub mod loaders;
 mod sizing;
 mod strip;
 mod table;
+pub mod row_resize;
 
 #[cfg(feature = "chrono")]
 pub use crate::datepicker::DatePickerButton;
