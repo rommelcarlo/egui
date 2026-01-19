@@ -37,15 +37,29 @@ pub(crate) struct StripLayoutFlags {
 
     /// Used when we want to accurately measure the size of this cell.
     pub(crate) sizing_pass: bool,
-    
+
     /// Whether this cell is "fixed" (should not scroll with content)
     pub(crate) is_fixed: bool,
-    
+
     /// Total width of fixed columns - used to clip scrollable content backgrounds
     pub(crate) fixed_columns_width: f32,
-    
+
     /// Scroll offset X - used to translate fixed column backgrounds
     pub(crate) scroll_offset_x: f32,
+
+    // --- Style overrides ---
+    /// Custom selection background color
+    pub(crate) selection_bg_color: Option<egui::Color32>,
+    /// Custom selection border stroke
+    pub(crate) selection_stroke: Option<egui::Stroke>,
+    /// Custom striped row background color
+    pub(crate) striped_bg_color: Option<egui::Color32>,
+    /// Custom hovered row background color
+    pub(crate) hovered_bg_color: Option<egui::Color32>,
+    /// Custom vertical grid line stroke
+    pub(crate) vertical_grid_stroke: Option<egui::Stroke>,
+    /// Custom horizontal grid line stroke
+    pub(crate) horizontal_grid_stroke: Option<egui::Stroke>,
 }
 
 /// Positions cells in [`CellDirection`] and starts a new line on [`StripLayout::end_line`]
@@ -134,11 +148,11 @@ impl<'l> StripLayout<'l> {
         // Make sure we don't have a gap in the stripe/frame/selection background:
         let item_spacing = self.ui.spacing().item_spacing;
         let gapless_rect = max_rect.expand2(0.5 * item_spacing).round_ui();
-        
+
         // For fixed cells, translate background to counter the scroll offset
         // For non-fixed cells, clip backgrounds to not draw over fixed columns
         let (bg_rect, painter) = if flags.is_fixed {
-            // Fixed columns: translate the rect to counter scroll, 
+            // Fixed columns: translate the rect to counter scroll,
             // but use the viewport's left portion as clip (where fixed columns appear on screen)
             // Round offset to avoid sub-pixel jitter
             let rounded_offset = flags.scroll_offset_x.round();
@@ -146,7 +160,10 @@ impl<'l> StripLayout<'l> {
             // Clip to the left portion of viewport (where fixed columns should be visible)
             let mut fixed_clip = self.ui.clip_rect();
             fixed_clip.max.x = fixed_clip.min.x + flags.fixed_columns_width;
-            (translated_rect, self.ui.painter().with_clip_rect(fixed_clip))
+            (
+                translated_rect,
+                self.ui.painter().with_clip_rect(fixed_clip),
+            )
         } else if flags.fixed_columns_width > 0.0 {
             // Non-fixed columns: clip to avoid drawing over fixed columns
             let mut clip = self.ui.clip_rect();
@@ -157,28 +174,43 @@ impl<'l> StripLayout<'l> {
         };
 
         if flags.striped {
-            painter.rect_filled(
-                bg_rect,
-                egui::CornerRadius::ZERO,
-                self.ui.visuals().faint_bg_color,
-            );
+            let color = flags
+                .striped_bg_color
+                .unwrap_or_else(|| self.ui.visuals().faint_bg_color);
+            painter.rect_filled(bg_rect, egui::CornerRadius::ZERO, color);
         }
 
         if flags.selected {
-            painter.rect_filled(
-                bg_rect,
-                egui::CornerRadius::ZERO,
-                self.ui.visuals().selection.bg_fill,
-            );
+            let bg_color = flags
+                .selection_bg_color
+                .unwrap_or_else(|| self.ui.visuals().selection.bg_fill);
+            painter.rect_filled(bg_rect, egui::CornerRadius::ZERO, bg_color);
+
+            // Draw selection border using explicit lines
+            let stroke = flags
+                .selection_stroke
+                .unwrap_or_else(|| self.ui.visuals().selection.stroke);
+            if stroke.width > 0.0 {
+                painter.hline(bg_rect.x_range(), bg_rect.top(), stroke);
+                painter.hline(bg_rect.x_range(), bg_rect.bottom(), stroke);
+                painter.vline(bg_rect.left(), bg_rect.y_range(), stroke);
+                painter.vline(bg_rect.right(), bg_rect.y_range(), stroke);
+            }
         }
 
         if flags.hovered && !flags.selected && self.sense.interactive() {
-            painter.rect_filled(
-                bg_rect,
-                egui::CornerRadius::ZERO,
-                self.ui.visuals().widgets.hovered.bg_fill,
-            );
+            let color = flags
+                .hovered_bg_color
+                .unwrap_or_else(|| self.ui.visuals().widgets.hovered.bg_fill);
+            painter.rect_filled(bg_rect, egui::CornerRadius::ZERO, color);
         }
+
+        // Draw grid lines (Right and Bottom)
+        let default_stroke = self.ui.visuals().widgets.noninteractive.bg_stroke;
+        let v_stroke = flags.vertical_grid_stroke.unwrap_or(default_stroke);
+        let h_stroke = flags.horizontal_grid_stroke.unwrap_or(default_stroke);
+        painter.vline(bg_rect.right(), bg_rect.y_range(), v_stroke);
+        painter.hline(bg_rect.x_range(), bg_rect.bottom(), h_stroke);
 
         let mut child_ui = self.cell(flags, max_rect, child_ui_id_salt, add_cell_contents);
 
@@ -242,7 +274,7 @@ impl<'l> StripLayout<'l> {
         } else {
             max_rect
         };
-        
+
         let mut ui_builder = UiBuilder::new()
             .id_salt(child_ui_id_salt)
             .ui_stack_info(egui::UiStackInfo::new(egui::UiKind::TableCell))
@@ -254,7 +286,7 @@ impl<'l> StripLayout<'l> {
         }
 
         let mut child_ui = self.ui.new_child(ui_builder);
-        
+
         // Apply appropriate clip rect based on fixed/non-fixed status
         if flags.is_fixed {
             // Fixed columns: use the left portion of viewport (where fixed columns appear on screen)

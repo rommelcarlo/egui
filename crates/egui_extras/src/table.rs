@@ -8,12 +8,152 @@ use egui::{
     scroll_area::{ScrollAreaOutput, ScrollBarVisibility, ScrollSource},
 };
 
-use crate::{
-    StripLayout,
-    layout::CellDirection,
-};
+use crate::{StripLayout, layout::CellDirection};
 
-// -----------------------------------------------------------------=----------
+// ----------------------------------------------------------------------------
+
+/// Styling configuration for table appearance.
+///
+/// All fields are optional. When `None`, the table uses `ui.visuals()` defaults.
+#[derive(Clone, Debug, Default)]
+pub struct TableStyle {
+    /// Background color for selected cells/rows.
+    /// Falls back to `ui.visuals().selection.bg_fill`.
+    pub selection_bg_color: Option<egui::Color32>,
+
+    /// Border stroke for selection highlight.
+    /// Falls back to `ui.visuals().selection.stroke`.
+    pub selection_stroke: Option<egui::Stroke>,
+
+    /// Stroke for vertical grid lines.
+    /// Falls back to `ui.visuals().widgets.noninteractive.bg_stroke`.
+    pub vertical_grid_stroke: Option<egui::Stroke>,
+
+    /// Stroke for horizontal grid lines.
+    /// Falls back to `ui.visuals().widgets.noninteractive.bg_stroke`.
+    pub horizontal_grid_stroke: Option<egui::Stroke>,
+
+    /// Background color for striped rows.
+    /// Falls back to `ui.visuals().faint_bg_color`.
+    pub striped_bg_color: Option<egui::Color32>,
+
+    /// Background color for hovered rows.
+    /// Falls back to `ui.visuals().widgets.hovered.bg_fill`.
+    pub hovered_bg_color: Option<egui::Color32>,
+
+    /// Header background color.
+    /// When `None`, header uses default cell background.
+    pub header_bg_color: Option<egui::Color32>,
+}
+
+impl TableStyle {
+    /// Create a new empty style (all defaults).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create an Excel-like style with green selection border.
+    ///
+    /// - Single cell: Green border, no background
+    /// - Range selection: Green border, light gray semi-transparent background
+    ///
+    /// Note: The distinction between single-cell and range selection
+    /// must be handled by the application (e.g., using different styles
+    /// or modifying `selection_bg_color` based on selection size).
+    pub fn excel_style() -> Self {
+        // Excel green color: #217346 (professional dark green)
+        let excel_green = egui::Color32::from_rgb(33, 115, 70);
+
+        Self {
+            // Green selection border (2px for visibility)
+            selection_stroke: Some(egui::Stroke::new(2.0, excel_green)),
+            // Very subtle gray background for range selection (works in both themes)
+            selection_bg_color: Some(egui::Color32::from_rgba_unmultiplied(128, 128, 128, 25)),
+            // Neutral gray grid lines - subtle in light mode, visible in dark mode
+            vertical_grid_stroke: Some(egui::Stroke::new(1.0, egui::Color32::from_gray(160))),
+            horizontal_grid_stroke: Some(egui::Stroke::new(1.0, egui::Color32::from_gray(160))),
+            // No striped rows (Excel default)
+            striped_bg_color: None,
+            // Very subtle hover effect
+            hovered_bg_color: Some(egui::Color32::from_rgba_unmultiplied(128, 128, 128, 15)),
+            header_bg_color: None,
+        }
+    }
+
+    /// Create a Google Sheets-like style.
+    ///
+    /// - Blue selection border
+    /// - Light blue semi-transparent background
+    pub fn google_sheets_style() -> Self {
+        // Google Blue: #1a73e8 (slightly adjusted for better visibility)
+        let google_blue = egui::Color32::from_rgb(26, 115, 232);
+        // Very subtle blue background (works in both themes)
+        let google_bg = egui::Color32::from_rgba_unmultiplied(26, 115, 232, 20);
+
+        Self {
+            selection_stroke: Some(egui::Stroke::new(2.0, google_blue)),
+            selection_bg_color: Some(google_bg),
+            // Neutral gray grid lines - professional in light mode, visible in dark mode
+            vertical_grid_stroke: Some(egui::Stroke::new(1.0, egui::Color32::from_gray(160))),
+            horizontal_grid_stroke: Some(egui::Stroke::new(1.0, egui::Color32::from_gray(160))),
+            striped_bg_color: None,
+            // Very subtle blue hover
+            hovered_bg_color: Some(egui::Color32::from_rgba_unmultiplied(26, 115, 232, 12)),
+            header_bg_color: None,
+        }
+    }
+
+    /// Set the selection background color.
+    #[inline]
+    pub fn selection_bg_color(mut self, color: egui::Color32) -> Self {
+        self.selection_bg_color = Some(color);
+        self
+    }
+
+    /// Set the selection border stroke.
+    #[inline]
+    pub fn selection_stroke(mut self, stroke: impl Into<egui::Stroke>) -> Self {
+        self.selection_stroke = Some(stroke.into());
+        self
+    }
+
+    /// Set the vertical grid line stroke.
+    #[inline]
+    pub fn vertical_grid_stroke(mut self, stroke: impl Into<egui::Stroke>) -> Self {
+        self.vertical_grid_stroke = Some(stroke.into());
+        self
+    }
+
+    /// Set the horizontal grid line stroke.
+    #[inline]
+    pub fn horizontal_grid_stroke(mut self, stroke: impl Into<egui::Stroke>) -> Self {
+        self.horizontal_grid_stroke = Some(stroke.into());
+        self
+    }
+
+    /// Set the striped row background color.
+    #[inline]
+    pub fn striped_bg_color(mut self, color: egui::Color32) -> Self {
+        self.striped_bg_color = Some(color);
+        self
+    }
+
+    /// Set the hovered row background color.
+    #[inline]
+    pub fn hovered_bg_color(mut self, color: egui::Color32) -> Self {
+        self.hovered_bg_color = Some(color);
+        self
+    }
+
+    /// Set the header background color.
+    #[inline]
+    pub fn header_bg_color(mut self, color: egui::Color32) -> Self {
+        self.header_bg_color = Some(color);
+        self
+    }
+}
+
+// ----------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum InitialColumnSize {
@@ -269,6 +409,7 @@ pub struct TableBuilder<'a> {
     cell_layout: egui::Layout,
     scroll_options: TableScrollOptions,
     sense: egui::Sense,
+    style: TableStyle,
 }
 
 impl<'a> TableBuilder<'a> {
@@ -284,6 +425,7 @@ impl<'a> TableBuilder<'a> {
             cell_layout,
             scroll_options: Default::default(),
             sense: egui::Sense::hover(),
+            style: TableStyle::default(),
         }
     }
 
@@ -461,6 +603,13 @@ impl<'a> TableBuilder<'a> {
         self
     }
 
+    /// Set the table style for customizing colors and strokes.
+    #[inline]
+    pub fn style(mut self, style: TableStyle) -> Self {
+        self.style = style;
+        self
+    }
+
     /// Allocate space for one column.
     #[inline]
     pub fn column(mut self, column: Column) -> Self {
@@ -503,6 +652,7 @@ impl<'a> TableBuilder<'a> {
             cell_layout,
             scroll_options,
             sense,
+            style,
         } = self;
 
         for (i, column) in columns.iter_mut().enumerate() {
@@ -519,14 +669,19 @@ impl<'a> TableBuilder<'a> {
         let state_id = ui.id().with(id_salt);
 
         let available_width_for_sizing = if scroll_options.hscroll {
-             1_000_000.0
+            1_000_000.0
         } else {
-             available_width
+            available_width
         };
 
-        let (is_sizing_pass, mut state) =
-            TableState::load(ui, state_id, resizable, &columns, available_width_for_sizing);
-            
+        let (is_sizing_pass, mut state) = TableState::load(
+            ui,
+            state_id,
+            resizable,
+            &columns,
+            available_width_for_sizing,
+        );
+
         let mut max_used_widths = vec![0.0; columns.len()];
         let table_top = ui.cursor().top();
 
@@ -541,88 +696,55 @@ impl<'a> TableBuilder<'a> {
 
         // Sync header scroll offset to body if body moved
         scroll_area = scroll_area.horizontal_scroll_offset(state.scroll_offset.x);
-        
+
         let scroll_area_output = scroll_area.show(ui, |ui| {
-                // let mut ui_builder = egui::UiBuilder::new();
-                // if is_sizing_pass {
-                //     ui_builder = ui_builder.sizing_pass();
-                // }
-                let mut ui_builder = egui::UiBuilder::new();
-    if is_sizing_pass {
-        ui_builder = ui_builder.sizing_pass();
-    }
-    // Set the min width to ensure proper scrolling
-    // let total_width: f32 = state.column_widths.iter().sum::<f32>() 
-    //    + ui.spacing().item_spacing.x * (columns.len() as f32 - 1.0);
-                ui.scope_builder(ui_builder, |ui| {
-                    // Calculate fixed columns width for header (for clipping) - before mutable borrow
-                    let spacing_x = ui.spacing().item_spacing.x;
-                    let mut fixed_columns_width = 0.0;
-                    for (i, column) in columns.iter().enumerate() {
-                        if column.fixed {
-                            fixed_columns_width += state.column_widths[i] + spacing_x;
-                        }
+            // let mut ui_builder = egui::UiBuilder::new();
+            // if is_sizing_pass {
+            //     ui_builder = ui_builder.sizing_pass();
+            // }
+            let mut ui_builder = egui::UiBuilder::new();
+            if is_sizing_pass {
+                ui_builder = ui_builder.sizing_pass();
+            }
+            // Set the min width to ensure proper scrolling
+            // let total_width: f32 = state.column_widths.iter().sum::<f32>()
+            //    + ui.spacing().item_spacing.x * (columns.len() as f32 - 1.0);
+            ui.scope_builder(ui_builder, |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                // Calculate fixed columns width for header (for clipping) - before mutable borrow
+                let spacing_x = ui.spacing().item_spacing.x;
+                let mut fixed_columns_width = 0.0;
+                for (i, column) in columns.iter().enumerate() {
+                    if column.fixed {
+                        fixed_columns_width += state.column_widths[i] + spacing_x;
                     }
-                    
-                    let mut layout = StripLayout::new(ui, CellDirection::Horizontal, cell_layout, sense);
-                    let mut response: Option<Response> = None;
-                    
-                    add_header_row(TableRow {
-                        layout: &mut layout,
-                        columns: &columns,
-                        widths: &state.column_widths,
-                        max_used_widths: &mut max_used_widths,
-                        row_index: 0,
-                        col_index: 0,
-                        height,
-                        striped: false,
-                        hovered: false,
-                        selected: false,
-                        overline: false,
-                        response: &mut response,
-                        scroll_offset_x: state.scroll_offset.x,
-                        fixed_columns_width,
-                    });
-                    layout.allocate_rect();
-                    
-                    // Draw header grid lines (resize separators)
-                    let bottom = ui.cursor().min.y;
-                    let top = ui.cursor().min.y - height;
-                    let start_x = ui.cursor().min.x - ui.spacing().item_spacing.x * 0.5;
-                    
-                    let scrollable_clip_rect = egui::Rect::from_min_max(
-                        egui::pos2(ui.clip_rect().min.x + fixed_columns_width, top),
-                        ui.clip_rect().max
-                    );
-                    
-                    let mut x = start_x;
-                    for (i, column_width) in state.column_widths.iter().enumerate() {
-                        let column = &columns[i];
-                        let column_is_resizable = column.resizable.unwrap_or(resizable);
-                        let spacing_x = ui.spacing().item_spacing.x;
-                        
-                        x += *column_width + spacing_x;
-                        
-                        if column_is_resizable {
-                            let is_fixed = column.fixed;
-                            
-                            let resize_x = if is_fixed {
-                                x + state.scroll_offset.x
-                            } else {
-                                x
-                            };
-                            
-                            let p0 = egui::pos2(resize_x, top);
-                            let p1 = egui::pos2(resize_x, bottom);
-                            
-                            let clip_rect = if is_fixed { ui.clip_rect() } else { scrollable_clip_rect };
-                            let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
-                            ui.painter().with_clip_rect(clip_rect).line_segment([p0, p1], stroke);
-                        }
-                    }
+                }
+
+                let mut layout =
+                    StripLayout::new(ui, CellDirection::Horizontal, cell_layout, sense);
+                let mut response: Option<Response> = None;
+
+                add_header_row(TableRow {
+                    layout: &mut layout,
+                    columns: &columns,
+                    widths: &state.column_widths,
+                    max_used_widths: &mut max_used_widths,
+                    row_index: 0,
+                    col_index: 0,
+                    height,
+                    striped: false,
+                    hovered: false,
+                    selected: false,
+                    overline: false,
+                    response: &mut response,
+                    scroll_offset_x: state.scroll_offset.x,
+                    fixed_columns_width,
+                    style: style.clone(),
                 });
+                layout.allocate_rect();
             });
-            
+        });
+
         // Update state with new offset (if header was scrolled)
         state.scroll_offset.x = scroll_area_output.state.offset.x;
 
@@ -644,6 +766,7 @@ impl<'a> TableBuilder<'a> {
             cell_layout,
             scroll_options,
             sense,
+            style,
         }
     }
 
@@ -664,20 +787,26 @@ impl<'a> TableBuilder<'a> {
             cell_layout,
             scroll_options,
             sense,
+            style,
         } = self;
 
         let striped = striped.unwrap_or_else(|| ui.visuals().striped);
 
         let state_id = ui.id().with(id_salt);
-        
+
         let available_width_for_sizing = if scroll_options.hscroll {
-             1_000_000.0
+            1_000_000.0
         } else {
-             available_width
+            available_width
         };
 
-        let (is_sizing_pass, mut state) =
-            TableState::load(ui, state_id, resizable, &columns, available_width_for_sizing);
+        let (is_sizing_pass, mut state) = TableState::load(
+            ui,
+            state_id,
+            resizable,
+            &columns,
+            available_width_for_sizing,
+        );
 
         let max_used_widths = vec![0.0; columns.len()];
         let table_top = ui.cursor().top();
@@ -698,6 +827,7 @@ impl<'a> TableBuilder<'a> {
             cell_layout,
             scroll_options,
             sense,
+            style,
         }
         .body(add_body_contents)
     }
@@ -829,6 +959,9 @@ pub struct Table<'a> {
     scroll_options: TableScrollOptions,
 
     sense: egui::Sense,
+
+    /// Custom styling options.
+    style: TableStyle,
 }
 
 impl Table<'_> {
@@ -860,6 +993,7 @@ impl Table<'_> {
             cell_layout,
             scroll_options,
             sense,
+            style,
         } = self;
 
         let TableScrollOptions {
@@ -877,9 +1011,9 @@ impl Table<'_> {
         } = scroll_options;
 
         let cursor_position = ui.cursor().min;
-        
+
         // Calculate fixed columns width for horizontal scrollbar offset
-        let spacing_x = ui.spacing().item_spacing.x;
+        let spacing_x = 0.0; // Force zero spacing
         let mut fixed_columns_width_for_scrollbar = 0.0;
         for (i, column) in columns.iter().enumerate() {
             if column.fixed {
@@ -903,15 +1037,18 @@ impl Table<'_> {
         if let Some(scroll_offset_y) = scroll_offset_y {
             scroll_area = scroll_area.vertical_scroll_offset(scroll_offset_y);
         }
-        
+
         // Sync body scroll offset to header if header moved (or if pervious frame had offset)
         scroll_area = scroll_area.horizontal_scroll_offset(state.scroll_offset.x);
-        
+
         // Offset horizontal scrollbar to start after fixed columns
         if fixed_columns_width_for_scrollbar > 0.0 && hscroll {
             let available_rect = ui.available_rect_before_wrap();
             let scrollbar_rect = egui::Rect::from_min_max(
-                egui::pos2(available_rect.left() + fixed_columns_width_for_scrollbar, available_rect.top()),
+                egui::pos2(
+                    available_rect.left() + fixed_columns_width_for_scrollbar,
+                    available_rect.top(),
+                ),
                 available_rect.max,
             );
             scroll_area = scroll_area.scroll_bar_rect(scrollbar_rect);
@@ -922,20 +1059,22 @@ impl Table<'_> {
         let max_used_widths_ref = &mut max_used_widths;
 
         let scroll_area_out = scroll_area.show(ui, move |ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO; // Ensure zero spacing for interaction loops too
             let mut scroll_to_y_range = None;
 
             let clip_rect = ui.clip_rect();
-    
+
             let mut ui_builder = egui::UiBuilder::new();
             if is_sizing_pass {
                 ui_builder = ui_builder.sizing_pass();
             }
-            
+
             ui.scope_builder(ui_builder, |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 let hovered_row_index_id = self.state_id.with("__table_hovered_row");
                 let hovered_row_index =
                     ui.data_mut(|data| data.remove_temp::<usize>(hovered_row_index_id));
-                
+
                 // Calculate fixed columns width for cell clipping - before mutable borrow
                 let spacing_x = ui.spacing().item_spacing.x;
                 let mut fixed_columns_width = 0.0;
@@ -961,6 +1100,7 @@ impl Table<'_> {
                     hovered_row_index,
                     hovered_row_index_id,
                     state_id: self.state_id,
+                    style: style.clone(),
                 });
 
                 if scroll_to_row.is_some() && scroll_to_y_range.is_none() {
@@ -977,174 +1117,201 @@ impl Table<'_> {
             }
 
             // --- GRID LINE LOGIC ---
-             let bottom = ui.clip_rect().bottom();
-             let top = ui.clip_rect().top();
-             let start_x = ui.cursor().min.x - ui.spacing().item_spacing.x * 0.5;
-             
-             let mut fixed_columns_width = 0.0;
-             for (i, column) in columns_ref.iter().enumerate() {
-                 if column.fixed {
-                     fixed_columns_width += state.column_widths[i] + ui.spacing().item_spacing.x;
-                 }
-             }
-             
-             let scrollable_clip_rect = egui::Rect::from_min_max(
+            let bottom = ui.clip_rect().bottom();
+            let top = ui.clip_rect().top();
+            let start_x = ui.cursor().min.x - ui.spacing().item_spacing.x * 0.5;
+
+            let mut fixed_columns_width = 0.0;
+            for (i, column) in columns_ref.iter().enumerate() {
+                if column.fixed {
+                    fixed_columns_width += state.column_widths[i] + ui.spacing().item_spacing.x;
+                }
+            }
+
+            let scrollable_clip_rect = egui::Rect::from_min_max(
                 egui::pos2(ui.clip_rect().min.x + fixed_columns_width, top),
-                ui.clip_rect().max
-             );
+                ui.clip_rect().max,
+            );
 
-             let mut x = start_x;
-             for (i, column_width) in state.column_widths.iter_mut().enumerate() {
-                 let column = &columns_ref[i];
-                 let column_is_resizable = column.resizable.unwrap_or(resizable);
-                 let width_range = column.width_range;
-                 let spacing_x = ui.spacing().item_spacing.x;
-                 
-                  if ui.is_sizing_pass() {
-                        if column.clip {
-                            *column_width = column_width.min(max_used_widths_ref[i]);
-                        } else {
-                            *column_width = max_used_widths_ref[i];
-                        }
-                    } else if !column.clip {
-                        *column_width = column_width.at_least(max_used_widths_ref[i]);
+            let mut x = start_x;
+            for (i, column_width) in state.column_widths.iter_mut().enumerate() {
+                let column = &columns_ref[i];
+                let column_is_resizable = column.resizable.unwrap_or(resizable);
+                let width_range = column.width_range;
+                let spacing_x = ui.spacing().item_spacing.x;
+
+                if ui.is_sizing_pass() {
+                    if column.clip {
+                        *column_width = column_width.min(max_used_widths_ref[i]);
+                    } else {
+                        *column_width = max_used_widths_ref[i];
                     }
-                    *column_width = width_range.clamp(*column_width);
+                } else if !column.clip {
+                    *column_width = column_width.at_least(max_used_widths_ref[i]);
+                }
+                *column_width = width_range.clamp(*column_width);
 
-                    x += *column_width + spacing_x;
-                    
-                    if column.is_auto() && (is_sizing_pass || !column_is_resizable) {
-                        *column_width = width_range.clamp(max_used_widths_ref[i]);
-                    } else if column_is_resizable {
-                        let is_fixed = column.fixed;
-                        
-                        // For fixed columns: counteract scroll offset to appear stationary relative to screen
-                        let resize_x = if is_fixed {
-                             x + state.scroll_offset.x 
+                x += *column_width + spacing_x;
+
+                if column.is_auto() && (is_sizing_pass || !column_is_resizable) {
+                    *column_width = width_range.clamp(max_used_widths_ref[i]);
+                } else if column_is_resizable {
+                    let is_fixed = column.fixed;
+
+                    // For fixed columns: counteract scroll offset to appear stationary relative to screen
+                    let resize_x = if is_fixed {
+                        x + state.scroll_offset.x
+                    } else {
+                        x
+                    };
+
+                    let mut p0 = egui::pos2(resize_x, top);
+                    let mut p1 = egui::pos2(resize_x, bottom);
+
+                    let line_rect = egui::Rect::from_min_max(p0, p1)
+                        .expand(ui.style().interaction.resize_grab_radius_side);
+
+                    let column_resize_id = state_id.with("resize_column").with(i);
+
+                    if resizable_body {
+                        let clip_rect = if is_fixed {
+                            ui.clip_rect()
                         } else {
-                             x
+                            scrollable_clip_rect
                         };
-                        
-                        let mut p0 = egui::pos2(resize_x, top);
-                        let mut p1 = egui::pos2(resize_x, bottom);
-                        
-                        let line_rect = egui::Rect::from_min_max(p0, p1)
-                            .expand(ui.style().interaction.resize_grab_radius_side);
-                            
-                        let column_resize_id = state_id.with("resize_column").with(i);
-                        
-                        if resizable_body {
-                             let clip_rect = if is_fixed { ui.clip_rect() } else { scrollable_clip_rect };
-                             let valid_rect = line_rect.intersect(clip_rect);
-                             
-                             if valid_rect.is_positive() {
-                                 let resize_response =
-                                    ui.interact(valid_rect, column_resize_id, egui::Sense::click_and_drag());
-                                    
-                                 if column.auto_size_this_frame {
-                                    *column_width = width_range.clamp(max_used_widths_ref[i]);
-                                } else if resize_response.dragged() {
-                                    let mut new_width = *column_width + resize_response.drag_delta().x;
-                                     if !column.clip {
-                                        let max_shrinkage_per_frame = 8.0;
-                                        new_width =
-                                            new_width.at_least(max_used_widths_ref[i] - max_shrinkage_per_frame);
-                                    }
-                                    new_width = width_range.clamp(new_width);
-                                    *column_width = new_width;
-                                }
-                                
-                                let dragging_something_else =
-                                    ui.input(|i| i.pointer.any_down() || i.pointer.any_pressed());
-                                let resize_hover = resize_response.hovered() && !dragging_something_else;
-            
-                                if resize_hover || resize_response.dragged() {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                                }
-            
-                                let stroke = if resize_response.dragged() {
-                                    ui.style().visuals.widgets.active.bg_stroke
-                                } else if resize_hover {
-                                    ui.style().visuals.widgets.hovered.bg_stroke
-                                } else {
-                                    ui.visuals().widgets.noninteractive.bg_stroke
-                                };
-                                
-                                ui.painter().with_clip_rect(clip_rect).line_segment([p0, p1], stroke);
-                             }
-                        } else {
-                             let clip_rect = if is_fixed { ui.clip_rect() } else { scrollable_clip_rect };
-                             
-                             if let Some(header_bottom) = header_bottom {
-                                 // For header-only resize, the interact_rect is in parent/screen coordinates
-                                 // but we're inside the scroll area Ui. Use the background layer to 
-                                 // register the interaction in absolute coordinates.
-                                 let p0_header = egui::pos2(resize_x, table_top);
-                                 let p1_header = egui::pos2(resize_x, header_bottom);
-                                 
-                                 let interact_rect = egui::Rect::from_min_max(p0_header, p1_header)
-                                    .expand(ui.style().interaction.resize_grab_radius_side);
+                        let valid_rect = line_rect.intersect(clip_rect);
 
-                                 if interact_rect.is_positive() {
-                                     // Check if pointer is in the header resize rect (in screen coordinates)
-                                     let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
-                                     let pointer_in_rect = pointer_pos.map_or(false, |pos| interact_rect.contains(pos));
-                                     
-                                     // Track drag state per column in frame-persistent data
-                                     let drag_key = column_resize_id.with("header_drag");
-                                     let was_dragging: bool = ui.data(|d| d.get_temp(drag_key).unwrap_or(false));
-                                     
-                                     let primary_down = ui.ctx().input(|i| i.pointer.primary_down());
-                                     let primary_pressed = ui.ctx().input(|i| i.pointer.primary_pressed());
-                                     
-                                     // Start drag on press in rect
-                                     let is_dragging = if primary_pressed && pointer_in_rect {
-                                         true
-                                     } else if was_dragging && primary_down {
-                                         true
-                                     } else {
-                                         false
-                                     };
-                                     
-                                     ui.data_mut(|d| d.insert_temp(drag_key, is_dragging));
-                                     
-                                     // Handle drag
-                                     if is_dragging {
-                                         let drag_delta = ui.ctx().input(|i| i.pointer.delta());
-                                         if column.auto_size_this_frame {
-                                            *column_width = width_range.clamp(max_used_widths_ref[i]);
-                                        } else {
-                                            let mut new_width = *column_width + drag_delta.x;
-                                             if !column.clip {
-                                                new_width = new_width.at_least(max_used_widths_ref[i] - 8.0);
-                                            }
-                                            *column_width = width_range.clamp(new_width);
-                                        }
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                                     } else if pointer_in_rect {
-                                         let dragging_something_else = ui.input(|i| i.pointer.any_down());
-                                         if !dragging_something_else {
-                                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                                         }
-                                     }
-                                 }
-                             }
-                             
-                             let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
-                             ui.painter().with_clip_rect(clip_rect).line_segment([p0, p1], stroke);
+                        if valid_rect.is_positive() {
+                            let resize_response = ui.interact(
+                                valid_rect,
+                                column_resize_id,
+                                egui::Sense::click_and_drag(),
+                            );
+
+                            if column.auto_size_this_frame {
+                                *column_width = width_range.clamp(max_used_widths_ref[i]);
+                            } else if resize_response.dragged() {
+                                let mut new_width = *column_width + resize_response.drag_delta().x;
+                                if !column.clip {
+                                    // Removed artificial shrinkage limit (previously 8.0) to allow responsive resizing
+                                    // limit to max_used_widths_ref[i] effectively means we can't shrink below content unless clipped
+                                    new_width = new_width.at_least(max_used_widths_ref[i]);
+                                }
+                                new_width = width_range.clamp(new_width);
+                                *column_width = new_width;
+
+                                // Draw the resize line at the cursor position for immediate visual feedback
+                                // This keeps the line in sync with the cursor even when width changes are constrained
+                                if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                    let cursor_x = pointer_pos.x;
+                                    p0 = egui::pos2(cursor_x, top);
+                                    p1 = egui::pos2(cursor_x, bottom);
+                                }
+                            }
+
+                            let dragging_something_else =
+                                ui.input(|i| i.pointer.any_down() || i.pointer.any_pressed());
+                            let resize_hover =
+                                resize_response.hovered() && !dragging_something_else;
+
+                            if resize_hover || resize_response.dragged() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                            }
+
+                            let stroke = if resize_response.dragged() {
+                                ui.style().visuals.widgets.active.bg_stroke
+                            } else if resize_hover {
+                                ui.style().visuals.widgets.hovered.bg_stroke
+                            } else {
+                                ui.visuals().widgets.noninteractive.bg_stroke
+                            };
+
+                            ui.painter()
+                                .with_clip_rect(clip_rect)
+                                .line_segment([p0, p1], stroke);
                         }
+                    } else {
+                        let clip_rect = if is_fixed {
+                            ui.clip_rect()
+                        } else {
+                            scrollable_clip_rect
+                        };
+
+                        if let Some(header_bottom) = header_bottom {
+                            // For header-only resize, the interact_rect is in parent/screen coordinates
+                            // but we're inside the scroll area Ui. Use the background layer to
+                            // register the interaction in absolute coordinates.
+                            let p0_header = egui::pos2(resize_x, table_top);
+                            let p1_header = egui::pos2(resize_x, header_bottom);
+
+                            let interact_rect = egui::Rect::from_min_max(p0_header, p1_header)
+                                .expand(ui.style().interaction.resize_grab_radius_side);
+
+                            if interact_rect.is_positive() {
+                                // Check if pointer is in the header resize rect (in screen coordinates)
+                                let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
+                                let pointer_in_rect =
+                                    pointer_pos.map_or(false, |pos| interact_rect.contains(pos));
+
+                                // Track drag state per column in frame-persistent data
+                                let drag_key = column_resize_id.with("header_drag");
+                                let was_dragging: bool =
+                                    ui.data(|d| d.get_temp(drag_key).unwrap_or(false));
+
+                                let primary_down = ui.ctx().input(|i| i.pointer.primary_down());
+                                let primary_pressed =
+                                    ui.ctx().input(|i| i.pointer.primary_pressed());
+
+                                // Start drag on press in rect
+                                let is_dragging = if primary_pressed && pointer_in_rect {
+                                    true
+                                } else if was_dragging && primary_down {
+                                    true
+                                } else {
+                                    false
+                                };
+
+                                ui.data_mut(|d| d.insert_temp(drag_key, is_dragging));
+
+                                // Handle drag
+                                if is_dragging {
+                                    let drag_delta = ui.ctx().input(|i| i.pointer.delta());
+                                    if column.auto_size_this_frame {
+                                        *column_width = width_range.clamp(max_used_widths_ref[i]);
+                                    } else {
+                                        let mut new_width = *column_width + drag_delta.x;
+                                        if !column.clip {
+                                            new_width =
+                                                new_width.at_least(max_used_widths_ref[i] - 8.0);
+                                        }
+                                        *column_width = width_range.clamp(new_width);
+                                    }
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                                } else if pointer_in_rect {
+                                    let dragging_something_else =
+                                        ui.input(|i| i.pointer.any_down());
+                                    if !dragging_something_else {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                                    }
+                                }
+                            }
+                        }
+
+                        // let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                        // ui.painter().with_clip_rect(clip_rect).line_segment([p0, p1], stroke);
                     }
-                    
-                    available_width -= *column_width + spacing_x;
-             }
-             
-             state
+                }
+
+                available_width -= *column_width + spacing_x;
+            }
+
+            state
         });
-        
+
         let mut state = scroll_area_out.inner;
         state.scroll_offset = scroll_area_out.state.offset;
         state.store(ui, state_id);
-    
+
         ScrollAreaOutput {
             state: scroll_area_out.state,
             content_size: scroll_area_out.content_size,
@@ -1188,6 +1355,9 @@ pub struct TableBody<'a> {
     /// Used to store the hovered row index between frames.
     hovered_row_index_id: egui::Id,
     state_id: egui::Id,
+
+    /// Custom styling options.
+    style: TableStyle,
 }
 
 impl<'a> TableBody<'a> {
@@ -1225,8 +1395,12 @@ impl<'a> TableBody<'a> {
     pub fn row(&mut self, height: f32, add_row_content: impl FnOnce(TableRow<'a, '_>)) {
         let mut response: Option<Response> = None;
         let top_y = self.layout.cursor.y;
-        let scroll_offset_x = self.layout.ui.ctx().data(|d| d.get_temp::<TableState>(self.state_id).map(|s| s.scroll_offset.x).unwrap_or(0.0));
-        
+        let scroll_offset_x = self.layout.ui.ctx().data(|d| {
+            d.get_temp::<TableState>(self.state_id)
+                .map(|s| s.scroll_offset.x)
+                .unwrap_or(0.0)
+        });
+
         add_row_content(TableRow {
             layout: &mut self.layout,
             columns: self.columns,
@@ -1242,6 +1416,7 @@ impl<'a> TableBody<'a> {
             response: &mut response,
             scroll_offset_x,
             fixed_columns_width: self.fixed_columns_width,
+            style: self.style.clone(),
         });
         self.capture_hover_state(&response, self.row_index);
         let bottom_y = self.layout.cursor.y;
@@ -1285,9 +1460,13 @@ impl<'a> TableBody<'a> {
     ) {
         let spacing = self.layout.ui.spacing().item_spacing;
         let row_height_with_spacing = row_height_sans_spacing + spacing.y;
-        
+
         let ctx = self.layout.ui.ctx().clone();
-        let scroll_offset_x = ctx.data(|d| d.get_temp::<TableState>(self.state_id).map(|s| s.scroll_offset.x).unwrap_or(0.0));
+        let scroll_offset_x = ctx.data(|d| {
+            d.get_temp::<TableState>(self.state_id)
+                .map(|s| s.scroll_offset.x)
+                .unwrap_or(0.0)
+        });
 
         if let Some(scroll_to_row) = self.scroll_to_row {
             let scroll_to_row = scroll_to_row.at_most(total_rows.saturating_sub(1)) as f32;
@@ -1312,8 +1491,6 @@ impl<'a> TableBody<'a> {
             ((scroll_offset_y + max_height) / row_height_with_spacing).ceil() as usize + 1;
         let max_row = max_row.min(total_rows);
 
-
-
         for row_index in min_row..max_row {
             let mut response: Option<Response> = None;
             add_row_content(TableRow {
@@ -1331,6 +1508,7 @@ impl<'a> TableBody<'a> {
                 response: &mut response,
                 scroll_offset_x,
                 fixed_columns_width: self.fixed_columns_width,
+                style: self.style.clone(),
             });
             self.capture_hover_state(&response, row_index);
         }
@@ -1384,8 +1562,12 @@ impl<'a> TableBody<'a> {
 
         let mut cursor_y: f64 = 0.0;
 
-        let scroll_offset_x = self.layout.ui.ctx().data(|d| d.get_temp::<TableState>(self.state_id).map(|s| s.scroll_offset.x).unwrap_or(0.0));
-        
+        let scroll_offset_x = self.layout.ui.ctx().data(|d| {
+            d.get_temp::<TableState>(self.state_id)
+                .map(|s| s.scroll_offset.x)
+                .unwrap_or(0.0)
+        });
+
         // Skip the invisible rows, and populate the first non-virtual row.
         for (row_index, row_height) in &mut enumerated_heights {
             let old_cursor_y = cursor_y;
@@ -1417,6 +1599,7 @@ impl<'a> TableBody<'a> {
                     response: &mut response,
                     scroll_offset_x,
                     fixed_columns_width: self.fixed_columns_width,
+                    style: self.style.clone(),
                 });
                 self.capture_hover_state(&response, row_index);
                 break;
@@ -1442,6 +1625,7 @@ impl<'a> TableBody<'a> {
                 response: &mut response,
                 scroll_offset_x,
                 fixed_columns_width: self.fixed_columns_width,
+                style: self.style.clone(),
             });
             self.capture_hover_state(&response, row_index);
             cursor_y += (row_height + spacing.y) as f64;
@@ -1521,7 +1705,7 @@ pub struct TableRow<'a, 'b> {
     max_used_widths: &'b mut [f32],
 
     scroll_offset_x: f32,
-    
+
     /// Total width of fixed columns (for clipping scrollable content)
     fixed_columns_width: f32,
 
@@ -1535,6 +1719,9 @@ pub struct TableRow<'a, 'b> {
     overline: bool,
 
     response: &'b mut Option<Response>,
+
+    /// Custom styling options.
+    style: TableStyle,
 }
 
 impl TableRow<'_, '_> {
@@ -1556,7 +1743,12 @@ impl TableRow<'_, '_> {
                 "Added more `Table` columns than were pre-allocated ({} pre-allocated)",
                 self.columns.len()
             );
-            return (Rect::NOTHING, self.layout.ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()));
+            return (
+                Rect::NOTHING,
+                self.layout
+                    .ui
+                    .allocate_response(egui::Vec2::ZERO, egui::Sense::hover()),
+            );
         };
 
         let width = crate::layout::CellSize::Absolute(width_f32);
@@ -1571,11 +1763,18 @@ impl TableRow<'_, '_> {
             is_fixed,
             fixed_columns_width: self.fixed_columns_width,
             scroll_offset_x: self.scroll_offset_x,
+            // Style overrides
+            selection_bg_color: self.style.selection_bg_color,
+            striped_bg_color: self.style.striped_bg_color,
+            hovered_bg_color: self.style.hovered_bg_color,
+            vertical_grid_stroke: self.style.vertical_grid_stroke,
+            horizontal_grid_stroke: self.style.horizontal_grid_stroke,
+            selection_stroke: self.style.selection_stroke,
         };
 
         let scroll_offset_x = self.scroll_offset_x;
         let fixed_columns_width = self.fixed_columns_width;
-        
+
         let (used_rect, response) = self.layout.add(
             flags,
             width,
@@ -1591,7 +1790,7 @@ impl TableRow<'_, '_> {
         if let Some(r) = self.response {
             *r = r.union(response.clone());
         } else {
-             *self.response = Some(response.clone());
+            *self.response = Some(response.clone());
         }
 
         (used_rect, response)
