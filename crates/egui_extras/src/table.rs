@@ -712,11 +712,10 @@ impl<'a> TableBuilder<'a> {
             ui.scope_builder(ui_builder, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 // Calculate fixed columns width for header (for clipping) - before mutable borrow
-                let spacing_x = ui.spacing().item_spacing.x;
                 let mut fixed_columns_width = 0.0;
                 for (i, column) in columns.iter().enumerate() {
                     if column.fixed {
-                        fixed_columns_width += state.column_widths[i] + spacing_x;
+                        fixed_columns_width += state.column_widths[i];
                     }
                 }
 
@@ -1069,18 +1068,17 @@ impl Table<'_> {
                 ui_builder = ui_builder.sizing_pass();
             }
 
-            ui.scope_builder(ui_builder, |ui| {
+                ui.scope_builder(ui_builder, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 let hovered_row_index_id = self.state_id.with("__table_hovered_row");
                 let hovered_row_index =
                     ui.data_mut(|data| data.remove_temp::<usize>(hovered_row_index_id));
 
                 // Calculate fixed columns width for cell clipping - before mutable borrow
-                let spacing_x = ui.spacing().item_spacing.x;
                 let mut fixed_columns_width = 0.0;
                 for (i, column) in columns_ref.iter().enumerate() {
                     if column.fixed {
-                        fixed_columns_width += state.column_widths[i] + spacing_x;
+                        fixed_columns_width += state.column_widths[i];
                     }
                 }
 
@@ -1119,12 +1117,12 @@ impl Table<'_> {
             // --- GRID LINE LOGIC ---
             let bottom = ui.clip_rect().bottom();
             let top = ui.clip_rect().top();
-            let start_x = ui.cursor().min.x - ui.spacing().item_spacing.x * 0.5;
+            let start_x = ui.cursor().min.x;
 
             let mut fixed_columns_width = 0.0;
             for (i, column) in columns_ref.iter().enumerate() {
                 if column.fixed {
-                    fixed_columns_width += state.column_widths[i] + ui.spacing().item_spacing.x;
+                    fixed_columns_width += state.column_widths[i];
                 }
             }
 
