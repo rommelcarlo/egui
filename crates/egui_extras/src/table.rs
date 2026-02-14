@@ -153,6 +153,32 @@ impl TableStyle {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnResizeMode {
+    Live,
+    Deferred,
+}
+
+impl Default for ColumnResizeMode {
+    fn default() -> Self {
+        ColumnResizeMode::Live
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TableResizeInfo {
+    pub active: bool,
+    pub column: Option<usize>,
+    pub preview_x: Option<f32>,
+    pub pending_width: Option<f32>,
+    pub mode: ColumnResizeMode,
+}
+
+pub fn table_resize_info(ui: &Ui, id_salt: impl std::hash::Hash) -> Option<TableResizeInfo> {
+    let state_id = ui.id().with(id_salt);
+    ui.data(|d| d.get_temp::<TableResizeInfo>(state_id.with("__table_resize_info")))
+}
+
 // ----------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -406,10 +432,12 @@ pub struct TableBuilder<'a> {
     striped: Option<bool>,
     resizable: bool,
     resizable_body: bool,
+    resize_mode: ColumnResizeMode,
     cell_layout: egui::Layout,
     scroll_options: TableScrollOptions,
     sense: egui::Sense,
     style: TableStyle,
+    scroll_bar_companion: Option<Box<dyn FnOnce(&mut Ui, f32) -> f32 + 'a>>,
 }
 
 impl<'a> TableBuilder<'a> {
@@ -422,10 +450,12 @@ impl<'a> TableBuilder<'a> {
             striped: None,
             resizable: false,
             resizable_body: true,
+            resize_mode: ColumnResizeMode::Live,
             cell_layout,
             scroll_options: Default::default(),
             sense: egui::Sense::hover(),
             style: TableStyle::default(),
+            scroll_bar_companion: None,
         }
     }
 
@@ -486,6 +516,13 @@ impl<'a> TableBuilder<'a> {
     #[inline]
     pub fn resizable_body(mut self, resizable_body: bool) -> Self {
         self.resizable_body = resizable_body;
+        self
+    }
+
+    /// Configure how column resizing behaves (default: live).
+    #[inline]
+    pub fn resize_mode(mut self, resize_mode: ColumnResizeMode) -> Self {
+        self.resize_mode = resize_mode;
         self
     }
 
@@ -610,6 +647,19 @@ impl<'a> TableBuilder<'a> {
         self
     }
 
+    /// Add a companion widget to the horizontal scroll bar.
+    ///
+    /// The callback receives the UI and the available width for the scroll bar area.
+    /// It should return the width consumed by the companion widget.
+    /// This is useful for adding tabs or other controls next to the scroll bar.
+    pub fn scroll_bar_companion(
+        mut self,
+        add_contents: impl FnOnce(&mut Ui, f32) -> f32 + 'a,
+    ) -> Self {
+        self.scroll_bar_companion = Some(Box::new(add_contents));
+        self
+    }
+
     /// Allocate space for one column.
     #[inline]
     pub fn column(mut self, column: Column) -> Self {
@@ -649,10 +699,12 @@ impl<'a> TableBuilder<'a> {
             striped,
             resizable,
             resizable_body,
+            resize_mode,
             cell_layout,
             scroll_options,
             sense,
             style,
+            scroll_bar_companion,
         } = self;
 
         for (i, column) in columns.iter_mut().enumerate() {
@@ -711,11 +763,143 @@ impl<'a> TableBuilder<'a> {
             //    + ui.spacing().item_spacing.x * (columns.len() as f32 - 1.0);
             ui.scope_builder(ui_builder, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                let preview_id = state_id.with("__resize_preview");
+                let resize_info_id = state_id.with("__table_resize_info");
+                let mut resize_preview = ui
+                    .data_mut(|d| d.get_temp::<ResizePreviewState>(preview_id))
+                    .unwrap_or_default();
+                let mut resize_info = TableResizeInfo {
+                    mode: resize_mode,
+                    ..Default::default()
+                };
                 // Calculate fixed columns width for header (for clipping) - before mutable borrow
                 let mut fixed_columns_width = 0.0;
                 for (i, column) in columns.iter().enumerate() {
                     if column.fixed {
                         fixed_columns_width += state.column_widths[i];
+                    }
+                }
+
+                let mut header_widths = state.column_widths.clone();
+                if !resizable_body {
+                    let header_top = ui.cursor().top();
+                    let header_bottom = header_top + height;
+                    let start_x = ui.cursor().min.x;
+                    let spacing_x = ui.spacing().item_spacing.x;
+                    let mut x = start_x;
+
+                    for (i, column) in columns.iter().enumerate() {
+                        let column_is_resizable = column.resizable.unwrap_or(resizable);
+                        let width_range = column.width_range;
+                        let max_used_width = state.max_used_widths.get(i).copied().unwrap_or(0.0);
+
+                        x += header_widths[i] + spacing_x;
+
+                        if !column_is_resizable {
+                            continue;
+                        }
+
+                        let resize_x = if column.fixed {
+                            x + state.scroll_offset.x
+                        } else {
+                            x
+                        };
+
+                        let p0 = egui::pos2(resize_x, header_top);
+                        let p1 = egui::pos2(resize_x, header_bottom);
+                        let interact_rect = egui::Rect::from_min_max(p0, p1)
+                            .expand(ui.style().interaction.resize_grab_radius_side);
+
+                        if interact_rect.is_positive() {
+                            let column_resize_id = state_id.with("resize_column").with(i);
+                            let resize_response = ui.interact(
+                                interact_rect,
+                                column_resize_id,
+                                egui::Sense::click_and_drag(),
+                            );
+                            let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+
+                            if resize_mode == ColumnResizeMode::Live {
+                                if resize_response.dragged() {
+                                    let mut new_width =
+                                        header_widths[i] + resize_response.drag_delta().x;
+                                    if !column.clip {
+                                        new_width = new_width.at_least(max_used_width);
+                                    }
+                                    new_width = width_range.clamp(new_width);
+                                    header_widths[i] = new_width;
+                                    state.column_widths[i] = new_width;
+                                }
+                            } else {
+                                if resize_response.drag_started() {
+                                    if let Some(pos) = pointer_pos {
+                                        resize_preview.active = true;
+                                        resize_preview.column = Some(i);
+                                        resize_preview.start_width = header_widths[i];
+                                        resize_preview.start_pointer_x = pos.x;
+                                        resize_preview.start_handle_x = resize_x;
+                                        resize_preview.pending_width = header_widths[i];
+                                        resize_preview.preview_x = resize_x;
+                                    }
+                                }
+
+                                if resize_preview.active && resize_preview.column == Some(i) {
+                                    if let Some(pos) = pointer_pos {
+                                        let delta = pos.x - resize_preview.start_pointer_x;
+                                        let mut new_width =
+                                            resize_preview.start_width + delta;
+                                        if !column.clip {
+                                            new_width = new_width.at_least(max_used_width);
+                                        }
+                                        resize_preview.pending_width =
+                                            width_range.clamp(new_width);
+                                        resize_preview.preview_x =
+                                            resize_preview.start_handle_x + delta;
+                                    }
+                                    header_widths[i] = resize_preview.pending_width;
+                                }
+
+                                if resize_response.drag_stopped()
+                                    && resize_preview.column == Some(i)
+                                {
+                                    state.column_widths[i] = resize_preview.pending_width;
+                                    header_widths[i] = resize_preview.pending_width;
+                                    resize_preview = ResizePreviewState::default();
+                                }
+                            }
+
+                            let dragging_something_else =
+                                ui.input(|i| i.pointer.any_down() || i.pointer.any_pressed());
+                            let resize_hover =
+                                resize_response.hovered() && !dragging_something_else;
+                            let drag_active = if resize_mode == ColumnResizeMode::Live {
+                                resize_response.dragged()
+                            } else {
+                                resize_preview.active && resize_preview.column == Some(i)
+                            };
+
+                            if resize_hover || drag_active {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                            }
+
+                            if drag_active {
+                                let preview_x = if resize_mode == ColumnResizeMode::Deferred {
+                                    resize_preview.preview_x
+                                } else {
+                                    resize_x
+                                };
+                                resize_info.active = true;
+                                resize_info.column = Some(i);
+                                resize_info.preview_x = Some(preview_x);
+                                resize_info.pending_width = Some(if resize_mode
+                                    == ColumnResizeMode::Deferred
+                                {
+                                    resize_preview.pending_width
+                                } else {
+                                    header_widths[i]
+                                });
+                            }
+                        }
                     }
                 }
 
@@ -726,7 +910,7 @@ impl<'a> TableBuilder<'a> {
                 add_header_row(TableRow {
                     layout: &mut layout,
                     columns: &columns,
-                    widths: &state.column_widths,
+                    widths: &header_widths,
                     max_used_widths: &mut max_used_widths,
                     row_index: 0,
                     col_index: 0,
@@ -741,6 +925,11 @@ impl<'a> TableBuilder<'a> {
                     style: style.clone(),
                 });
                 layout.allocate_rect();
+
+                ui.data_mut(|d| {
+                    d.insert_temp(preview_id, resize_preview);
+                    d.insert_temp(resize_info_id, resize_info);
+                });
             });
         });
 
@@ -761,11 +950,13 @@ impl<'a> TableBuilder<'a> {
             is_sizing_pass,
             resizable,
             resizable_body,
+            resize_mode,
             striped,
             cell_layout,
             scroll_options,
             sense,
             style,
+            scroll_bar_companion,
         }
     }
 
@@ -783,10 +974,12 @@ impl<'a> TableBuilder<'a> {
             striped,
             resizable,
             resizable_body,
+            resize_mode,
             cell_layout,
             scroll_options,
             sense,
             style,
+            scroll_bar_companion,
         } = self;
 
         let striped = striped.unwrap_or_else(|| ui.visuals().striped);
@@ -822,11 +1015,13 @@ impl<'a> TableBuilder<'a> {
             is_sizing_pass,
             resizable,
             resizable_body,
+            resize_mode,
             striped,
             cell_layout,
             scroll_options,
             sense,
             style,
+            scroll_bar_companion,
         }
         .body(add_body_contents)
     }
@@ -845,6 +1040,17 @@ struct TableState {
     /// If known from previous frame
     #[cfg_attr(feature = "serde", serde(skip))]
     max_used_widths: Vec<f32>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ResizePreviewState {
+    active: bool,
+    column: Option<usize>,
+    start_width: f32,
+    start_pointer_x: f32,
+    start_handle_x: f32,
+    pending_width: f32,
+    preview_x: f32,
 }
 
 impl TableState {
@@ -952,6 +1158,7 @@ pub struct Table<'a> {
     is_sizing_pass: bool,
     resizable: bool,
     resizable_body: bool,
+    resize_mode: ColumnResizeMode,
     striped: bool,
     cell_layout: egui::Layout,
 
@@ -961,6 +1168,7 @@ pub struct Table<'a> {
 
     /// Custom styling options.
     style: TableStyle,
+    scroll_bar_companion: Option<Box<dyn FnOnce(&mut Ui, f32) -> f32 + 'a>>,
 }
 
 impl Table<'_> {
@@ -984,6 +1192,7 @@ impl Table<'_> {
             columns,
             resizable,
             resizable_body,
+            resize_mode,
             mut available_width,
             mut state,
             mut max_used_widths,
@@ -993,6 +1202,7 @@ impl Table<'_> {
             scroll_options,
             sense,
             style,
+            scroll_bar_companion,
         } = self;
 
         let TableScrollOptions {
@@ -1020,6 +1230,27 @@ impl Table<'_> {
             }
         }
 
+        let mut companion_width = 0.0;
+
+        if hscroll {
+            if let Some(companion) = scroll_bar_companion {
+                let available_rect = ui.available_rect_before_wrap();
+                let sb_allocated_width = ui.spacing().scroll.allocated_width();
+                let bottom = available_rect.bottom();
+                let left = available_rect.left();
+
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(left, bottom - sb_allocated_width),
+                    egui::vec2(available_rect.width(), sb_allocated_width),
+                );
+
+                let mut child_ui =
+                    ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                companion_width = companion(&mut child_ui, available_rect.width());
+                println!("[Table::body] companion_width={}", companion_width);
+            }
+        }
+
         let mut scroll_area = ScrollArea::new([hscroll, vscroll])
             .id_salt(state_id.with("__scroll_area"))
             .scroll_source(ScrollSource {
@@ -1040,12 +1271,12 @@ impl Table<'_> {
         // Sync body scroll offset to header if header moved (or if pervious frame had offset)
         scroll_area = scroll_area.horizontal_scroll_offset(state.scroll_offset.x);
 
-        // Offset horizontal scrollbar to start after fixed columns
-        if fixed_columns_width_for_scrollbar > 0.0 && hscroll {
+        // Offset horizontal scrollbar to start after fixed columns and companion widget
+        if (fixed_columns_width_for_scrollbar > 0.0 || companion_width > 0.0) && hscroll {
             let available_rect = ui.available_rect_before_wrap();
             let scrollbar_rect = egui::Rect::from_min_max(
                 egui::pos2(
-                    available_rect.left() + fixed_columns_width_for_scrollbar,
+                    available_rect.left() + fixed_columns_width_for_scrollbar + companion_width,
                     available_rect.top(),
                 ),
                 available_rect.max,
@@ -1068,7 +1299,7 @@ impl Table<'_> {
                 ui_builder = ui_builder.sizing_pass();
             }
 
-                ui.scope_builder(ui_builder, |ui| {
+            ui.scope_builder(ui_builder, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 let hovered_row_index_id = self.state_id.with("__table_hovered_row");
                 let hovered_row_index =
@@ -1119,6 +1350,19 @@ impl Table<'_> {
             let top = ui.clip_rect().top();
             let start_x = ui.cursor().min.x;
 
+            let preview_id = state_id.with("__resize_preview");
+            let resize_info_id = state_id.with("__table_resize_info");
+            let mut resize_preview = ui
+                .data_mut(|d| d.get_temp::<ResizePreviewState>(preview_id))
+                .unwrap_or_default();
+            let mut resize_info = ui
+                .data(|d| d.get_temp::<TableResizeInfo>(resize_info_id))
+                .unwrap_or_else(|| TableResizeInfo {
+                    mode: resize_mode,
+                    ..Default::default()
+                });
+            resize_info.mode = resize_mode;
+
             let mut fixed_columns_width = 0.0;
             for (i, column) in columns_ref.iter().enumerate() {
                 if column.fixed {
@@ -1131,6 +1375,7 @@ impl Table<'_> {
                 ui.clip_rect().max,
             );
 
+            let header_resize_handled = !resizable_body && header_bottom.is_some();
             let mut x = start_x;
             for (i, column_width) in state.column_widths.iter_mut().enumerate() {
                 let column = &columns_ref[i];
@@ -1186,24 +1431,56 @@ impl Table<'_> {
                                 egui::Sense::click_and_drag(),
                             );
 
+                            let pointer_pos = ui.input(|i| i.pointer.hover_pos());
                             if column.auto_size_this_frame {
                                 *column_width = width_range.clamp(max_used_widths_ref[i]);
-                            } else if resize_response.dragged() {
-                                let mut new_width = *column_width + resize_response.drag_delta().x;
-                                if !column.clip {
-                                    // Removed artificial shrinkage limit (previously 8.0) to allow responsive resizing
-                                    // limit to max_used_widths_ref[i] effectively means we can't shrink below content unless clipped
-                                    new_width = new_width.at_least(max_used_widths_ref[i]);
-                                }
-                                new_width = width_range.clamp(new_width);
-                                *column_width = new_width;
+                            } else if resize_mode == ColumnResizeMode::Live {
+                                if resize_response.dragged() {
+                                    let mut new_width =
+                                        *column_width + resize_response.drag_delta().x;
+                                    if !column.clip {
+                                        // limit to max_used_widths_ref[i] effectively means we can't shrink below content unless clipped
+                                        new_width = new_width.at_least(max_used_widths_ref[i]);
+                                    }
+                                    new_width = width_range.clamp(new_width);
+                                    *column_width = new_width;
 
-                                // Draw the resize line at the cursor position for immediate visual feedback
-                                // This keeps the line in sync with the cursor even when width changes are constrained
-                                if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                    let cursor_x = pointer_pos.x;
-                                    p0 = egui::pos2(cursor_x, top);
-                                    p1 = egui::pos2(cursor_x, bottom);
+                                    // Draw the resize line at the cursor position for immediate visual feedback
+                                    if let Some(pointer_pos) = pointer_pos {
+                                        let cursor_x = pointer_pos.x;
+                                        p0 = egui::pos2(cursor_x, top);
+                                        p1 = egui::pos2(cursor_x, bottom);
+                                    }
+                                }
+                            } else {
+                                if resize_response.drag_started() {
+                                    if let Some(pos) = pointer_pos {
+                                        resize_preview.active = true;
+                                        resize_preview.column = Some(i);
+                                        resize_preview.start_width = *column_width;
+                                        resize_preview.start_pointer_x = pos.x;
+                                        resize_preview.start_handle_x = resize_x;
+                                        resize_preview.pending_width = *column_width;
+                                        resize_preview.preview_x = resize_x;
+                                    }
+                                }
+
+                                if resize_preview.active && resize_preview.column == Some(i) {
+                                    if let Some(pos) = pointer_pos {
+                                        let delta = pos.x - resize_preview.start_pointer_x;
+                                        let mut new_width = resize_preview.start_width + delta;
+                                        if !column.clip {
+                                            new_width = new_width.at_least(max_used_widths_ref[i]);
+                                        }
+                                        resize_preview.pending_width = width_range.clamp(new_width);
+                                        resize_preview.preview_x =
+                                            resize_preview.start_handle_x + delta;
+                                    }
+
+                                    if resize_response.drag_stopped() {
+                                        *column_width = resize_preview.pending_width;
+                                        resize_preview = ResizePreviewState::default();
+                                    }
                                 }
                             }
 
@@ -1211,12 +1488,41 @@ impl Table<'_> {
                                 ui.input(|i| i.pointer.any_down() || i.pointer.any_pressed());
                             let resize_hover =
                                 resize_response.hovered() && !dragging_something_else;
+                            let drag_active = if resize_mode == ColumnResizeMode::Live {
+                                resize_response.dragged()
+                            } else {
+                                resize_preview.active && resize_preview.column == Some(i)
+                            };
 
-                            if resize_hover || resize_response.dragged() {
+                            if drag_active {
+                                let preview_x = if resize_mode == ColumnResizeMode::Deferred {
+                                    resize_preview.preview_x
+                                } else {
+                                    p0.x
+                                };
+                                resize_info.active = true;
+                                resize_info.column = Some(i);
+                                resize_info.preview_x = Some(preview_x);
+                                resize_info.pending_width = Some(if resize_mode
+                                    == ColumnResizeMode::Deferred
+                                {
+                                    resize_preview.pending_width
+                                } else {
+                                    *column_width
+                                });
+                            }
+
+                            if resize_hover || drag_active {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                             }
 
-                            let stroke = if resize_response.dragged() {
+                            if resize_mode == ColumnResizeMode::Deferred && drag_active {
+                                let preview_x = resize_preview.preview_x;
+                                p0 = egui::pos2(preview_x, top);
+                                p1 = egui::pos2(preview_x, bottom);
+                            }
+
+                            let stroke = if drag_active {
                                 ui.style().visuals.widgets.active.bg_stroke
                             } else if resize_hover {
                                 ui.style().visuals.widgets.hovered.bg_stroke
@@ -1235,7 +1541,27 @@ impl Table<'_> {
                             scrollable_clip_rect
                         };
 
-                        if let Some(header_bottom) = header_bottom {
+                        if header_resize_handled {
+                            let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                            ui.painter()
+                                .with_clip_rect(clip_rect)
+                                .line_segment([p0, p1], stroke);
+
+                            if resize_mode == ColumnResizeMode::Deferred
+                                && resize_info.active
+                                && resize_info.column == Some(i)
+                            {
+                                let preview_x =
+                                    resize_info.preview_x.unwrap_or(resize_x);
+                                let p0_preview = egui::pos2(preview_x, top);
+                                let p1_preview = egui::pos2(preview_x, bottom);
+                                let stroke =
+                                    ui.style().visuals.widgets.active.bg_stroke;
+                                ui.painter()
+                                    .with_clip_rect(clip_rect)
+                                    .line_segment([p0_preview, p1_preview], stroke);
+                            }
+                        } else if let Some(header_bottom) = header_bottom {
                             // For header-only resize, the interact_rect is in parent/screen coordinates
                             // but we're inside the scroll area Ui. Use the background layer to
                             // register the interaction in absolute coordinates.
@@ -1271,26 +1597,117 @@ impl Table<'_> {
 
                                 ui.data_mut(|d| d.insert_temp(drag_key, is_dragging));
 
+                                let drag_active = if resize_mode == ColumnResizeMode::Live {
+                                    is_dragging
+                                } else {
+                                    resize_preview.active && resize_preview.column == Some(i)
+                                };
+
                                 // Handle drag
-                                if is_dragging {
-                                    let drag_delta = ui.ctx().input(|i| i.pointer.delta());
-                                    if column.auto_size_this_frame {
-                                        *column_width = width_range.clamp(max_used_widths_ref[i]);
-                                    } else {
-                                        let mut new_width = *column_width + drag_delta.x;
-                                        if !column.clip {
-                                            new_width =
-                                                new_width.at_least(max_used_widths_ref[i] - 8.0);
+                                if resize_mode == ColumnResizeMode::Live {
+                                    if is_dragging {
+                                        let drag_delta = ui.ctx().input(|i| i.pointer.delta());
+                                        if column.auto_size_this_frame {
+                                            *column_width =
+                                                width_range.clamp(max_used_widths_ref[i]);
+                                        } else {
+                                            let mut new_width = *column_width + drag_delta.x;
+                                            if !column.clip {
+                                                new_width = new_width
+                                                    .at_least(max_used_widths_ref[i] - 8.0);
+                                            }
+                                            *column_width = width_range.clamp(new_width);
                                         }
-                                        *column_width = width_range.clamp(new_width);
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                                    } else if pointer_in_rect {
+                                        let dragging_something_else =
+                                            ui.input(|i| i.pointer.any_down());
+                                        if !dragging_something_else {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                                        }
                                     }
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-                                } else if pointer_in_rect {
-                                    let dragging_something_else =
-                                        ui.input(|i| i.pointer.any_down());
-                                    if !dragging_something_else {
+                                } else {
+                                    if primary_pressed && pointer_in_rect {
+                                        if let Some(pos) = pointer_pos {
+                                            resize_preview.active = true;
+                                            resize_preview.column = Some(i);
+                                            resize_preview.start_width = *column_width;
+                                            resize_preview.start_pointer_x = pos.x;
+                                            resize_preview.start_handle_x = resize_x;
+                                            resize_preview.pending_width = *column_width;
+                                            resize_preview.preview_x = resize_x;
+                                        }
+                                    }
+
+                                    if is_dragging
+                                        && resize_preview.active
+                                        && resize_preview.column == Some(i)
+                                    {
+                                        if let Some(pos) = pointer_pos {
+                                            let delta = pos.x - resize_preview.start_pointer_x;
+                                            let mut new_width =
+                                                resize_preview.start_width + delta;
+                                            if !column.clip {
+                                                new_width =
+                                                    new_width.at_least(max_used_widths_ref[i]);
+                                            }
+                                            resize_preview.pending_width =
+                                                width_range.clamp(new_width);
+                                            resize_preview.preview_x =
+                                                resize_preview.start_handle_x + delta;
+                                        }
+                                    }
+
+                                    if was_dragging
+                                        && !primary_down
+                                        && resize_preview.column == Some(i)
+                                    {
+                                        *column_width = resize_preview.pending_width;
+                                        resize_preview = ResizePreviewState::default();
+                                    }
+
+                                    if pointer_in_rect && !primary_down {
+                                        let dragging_something_else =
+                                            ui.input(|i| i.pointer.any_down());
+                                        if !dragging_something_else {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                                        }
+                                    }
+
+                                    if drag_active {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                                     }
+                                }
+
+                                if drag_active {
+                                    let preview_x = if resize_mode
+                                        == ColumnResizeMode::Deferred
+                                    {
+                                        resize_preview.preview_x
+                                    } else {
+                                        resize_x
+                                    };
+                                    resize_info.active = true;
+                                    resize_info.column = Some(i);
+                                    resize_info.preview_x = Some(preview_x);
+                                    resize_info.pending_width = Some(if resize_mode
+                                        == ColumnResizeMode::Deferred
+                                    {
+                                        resize_preview.pending_width
+                                    } else {
+                                        *column_width
+                                    });
+                                }
+
+                                if resize_mode == ColumnResizeMode::Deferred && drag_active {
+                                    let preview_x = resize_preview.preview_x;
+                                    let p0_preview = egui::pos2(preview_x, top);
+                                    let p1_preview = egui::pos2(preview_x, bottom);
+                                    let stroke =
+                                        ui.style().visuals.widgets.active.bg_stroke;
+                                    ui.painter()
+                                        .with_clip_rect(clip_rect)
+                                        .line_segment([p0_preview, p1_preview], stroke);
                                 }
                             }
                         }
@@ -1302,6 +1719,11 @@ impl Table<'_> {
 
                 available_width -= *column_width + spacing_x;
             }
+
+            ui.data_mut(|d| {
+                d.insert_temp(preview_id, resize_preview);
+                d.insert_temp(resize_info_id, resize_info);
+            });
 
             state
         });

@@ -75,6 +75,18 @@ impl RowResizeState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowResizeMode {
+    Live,
+    Deferred,
+}
+
+impl Default for RowResizeMode {
+    fn default() -> Self {
+        RowResizeMode::Live
+    }
+}
+
 /// Configuration for row resizing behavior.
 #[derive(Clone, Copy, Debug)]
 pub struct RowResizeConfig {
@@ -93,6 +105,9 @@ pub struct RowResizeConfig {
     /// Whether to allow row resizing in the table body (not just header).
     /// Default is false - only row headers can be used to resize.
     pub resize_in_body: bool,
+
+    /// Row resize update mode.
+    pub resize_mode: RowResizeMode,
 }
 
 impl Default for RowResizeConfig {
@@ -103,6 +118,7 @@ impl Default for RowResizeConfig {
             height_range: Rangef::new(10.0, f32::INFINITY),
             grab_radius: 5.0,
             resize_in_body: false,
+            resize_mode: RowResizeMode::Live,
         }
     }
 }
@@ -134,6 +150,22 @@ impl RowResizeConfig {
         self.resize_in_body = enable;
         self
     }
+
+    /// Set row resize update mode.
+    pub fn resize_mode(mut self, mode: RowResizeMode) -> Self {
+        self.resize_mode = mode;
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RowResizePreviewState {
+    active: bool,
+    row: Option<usize>,
+    start_height: f32,
+    start_pointer_y: f32,
+    pending_height: f32,
+    preview_y: f32,
 }
 
 /// Handle row border resize interaction.
@@ -162,6 +194,10 @@ pub fn handle_row_resize(
     }
     
     let resize_id = state_id.with("resize_row").with(row_index);
+    let preview_id = state_id.with("__row_resize_preview");
+    let mut preview = ui
+        .data_mut(|d| d.get_temp::<RowResizePreviewState>(preview_id))
+        .unwrap_or_default();
     
     // Calculate the interact rect for this row's bottom border
     let p0 = Pos2::new(left_x, row_bottom_y);
@@ -195,26 +231,75 @@ pub fn handle_row_resize(
     
     ui.data_mut(|d| d.insert_temp(drag_key, is_dragging));
     
+    let current_height = state.get_row_height(row_index, config.default_height);
     let mut new_height = None;
-    
-    // Handle drag
-    if is_dragging {
-        let drag_delta = ui.ctx().input(|i| i.pointer.delta());
-        let current_height = state.get_row_height(row_index, config.default_height);
-        let updated_height = config.height_range.clamp(current_height + drag_delta.y);
-        
-        if (updated_height - current_height).abs() > 0.01 {
-            state.set_row_height(row_index, updated_height);
-            new_height = Some(updated_height);
-        }
-        
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeRow);
-    } else if pointer_in_rect {
-        let dragging_something_else = ui.input(|i| i.pointer.any_down());
-        if !dragging_something_else {
+
+    if config.resize_mode == RowResizeMode::Live {
+        // Handle drag (live updates)
+        if is_dragging {
+            let drag_delta = ui.ctx().input(|i| i.pointer.delta());
+            let updated_height = config.height_range.clamp(current_height + drag_delta.y);
+
+            if (updated_height - current_height).abs() > 0.01 {
+                state.set_row_height(row_index, updated_height);
+                new_height = Some(updated_height);
+            }
+
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeRow);
+        } else if pointer_in_rect {
+            let dragging_something_else = ui.input(|i| i.pointer.any_down());
+            if !dragging_something_else {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeRow);
+            }
+        }
+        preview = RowResizePreviewState::default();
+    } else {
+        // Deferred updates with guide line preview
+        if primary_pressed && pointer_in_rect {
+            if let Some(pos) = pointer_pos {
+                preview.active = true;
+                preview.row = Some(row_index);
+                preview.start_height = current_height;
+                preview.start_pointer_y = pos.y;
+                preview.pending_height = current_height;
+                preview.preview_y = row_bottom_y;
+            }
+        }
+
+        if is_dragging && preview.active && preview.row == Some(row_index) {
+            if let Some(pos) = pointer_pos {
+                let delta = pos.y - preview.start_pointer_y;
+                let mut updated_height = preview.start_height + delta;
+                updated_height = config.height_range.clamp(updated_height);
+                preview.pending_height = updated_height;
+                preview.preview_y = row_bottom_y + (updated_height - current_height);
+            }
+        }
+
+        if was_dragging && !primary_down && preview.row == Some(row_index) {
+            state.set_row_height(row_index, preview.pending_height);
+            new_height = Some(preview.pending_height);
+            preview = RowResizePreviewState::default();
+        }
+
+        if is_dragging {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeRow);
+        } else if pointer_in_rect {
+            let dragging_something_else = ui.input(|i| i.pointer.any_down());
+            if !dragging_something_else {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeRow);
+            }
+        }
+
+        if preview.active && preview.row == Some(row_index) {
+            let p0 = Pos2::new(left_x, preview.preview_y);
+            let p1 = Pos2::new(right_x, preview.preview_y);
+            let stroke = ui.style().visuals.widgets.active.bg_stroke;
+            ui.painter().line_segment([p0, p1], stroke);
         }
     }
-    
+
+    ui.data_mut(|d| d.insert_temp(preview_id, preview));
+
     new_height
 }
